@@ -16,6 +16,7 @@
 #include <linux/can.h>
 #include <linux/can/raw.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -30,10 +31,8 @@
 #include "std_msgs/msg/string.hpp"
 #include "carutils.h"
 
-#define MAX_INTERFACES 4
 #define DBC_NAMELEN_MAX 64
 #define NODE_TAG "canbus"
-#define CONFIG_DIR "/etc/ros2/can"
 
 #define rlog rclcpp::get_logger("canbus")
 #define ii(...) RCLCPP_INFO(rlog, __VA_ARGS__);
@@ -157,9 +156,9 @@ private:
 	};
 
 	void readLoop(int sd, struct can_frame *);
-	void loop(std::string name);
-	void filter(const char *name);
-	void init();
+	void loop(const char *name);
+	void config(const char *path);
+	void init(const char *dev, const char *cfg);
 	int read(int sd, struct can_frame *);
 	void publish(struct can_frame *);
 	bool parseSignal(char *str, const struct can_object *,
@@ -185,7 +184,19 @@ CanBridge::~CanBridge()
 
 CanBridge::CanBridge(): Node(NODE_TAG)
 {
-	init();
+	const char *dev = getenv("CAN_DEVICE");
+	if (!dev) {
+		ee("CAN_DEVICE variable is not set");
+		exit(1);
+	}
+
+	const char *cfg = getenv("CAN_CONFIG");
+	if (!cfg) {
+		ee("CAN_CONFIG variable is not set");
+		exit(1);
+	}
+
+	init(dev, cfg);
 }
 
 #define create_publisher(name) \
@@ -235,12 +246,11 @@ bool CanBridge::parseBusObject(char *str, const struct can_object **obj,
 	return true;
 }
 
-void CanBridge::filter(const char *name)
+void CanBridge::config(const char *path)
 {
-	std::string path = CONFIG_DIR + std::string("/") + name + "/signals";
-	FILE *f = fopen(path.c_str(), "ro");
+	FILE *f = fopen(path, "ro");
 	if (!f) {
-		ee("Unable to open file %s: %s", path.c_str(), strerror(errno));
+		ee("Unable to open file %s: %s", path, strerror(errno));
 		exit(1);
 	}
 
@@ -267,43 +277,29 @@ void CanBridge::filter(const char *name)
 	fclose(f);
 }
 
-void CanBridge::init()
+void CanBridge::init(const char *dev, const char *cfg)
 {
-	DIR *dir = opendir(CONFIG_DIR);
-	if (!dir) {
-		ee("Failed to open dir %s: %s", CONFIG_DIR, strerror(errno));
+	struct stat st;
+
+	if (stat(cfg, &st) < 0) {
+		ee("%s: path error, %s", cfg, strerror(errno));
 		exit(1);
 	}
 
-	ii("Preparing interfaces ...");
-	uint8_t count = 0;
-	bool found = false;
-	struct dirent *ent;
-
-	while ((ent = readdir(dir))) {
-		if (ent->d_name[0] == '.' || ent->d_name[1] == '.') {
-			continue;
-		} else if (++count >= MAX_INTERFACES) { /* sanity check */
-			ww("Number of interfaces exceeds %u",
-			 MAX_INTERFACES);
-			break;
-		}
-
-		filter(ent->d_name);
-
-		if (!topics_.size()) {
-			ee("Failed to create topics for bus %s", ent->d_name);
-			exit(1);
-		}
-
-		loop(std::string(basename(ent->d_name)));
-		found = true;
-	}
-
-	if (!found) {
-		ee("No configured interfaces");
+	if ((st.st_mode & S_IFMT) != S_IFREG) {
+		ee("%s: is not a regular file", cfg);
 		exit(1);
 	}
+
+	ii("Device %s config %s", dev, cfg);
+	config(cfg);
+
+	if (!topics_.size()) {
+		ee("Failed to create topics for dev %s", dev);
+		exit(1);
+	}
+
+	loop(dev);
 }
 
 int CanBridge::read(int sd, struct can_frame *frame)
@@ -366,15 +362,15 @@ void CanBridge::readLoop(int sd, struct can_frame *frame)
 	}
 }
 
-void CanBridge::loop(std::string name)
+void CanBridge::loop(const char *name)
 {
 	auto t = std::thread { [=]() -> void {
 		int sd = -1;
 		while (!done_) {
 			struct can_frame frame;
 
-			ii("Open bus %s", name.c_str());
-			if ((sd = can_open(name.c_str())) < 0) {
+			ii("Open bus %s", name);
+			if ((sd = can_open(name)) < 0) {
 				sleep(1); /* relax and retry */
 				continue;
 			}
@@ -382,10 +378,10 @@ void CanBridge::loop(std::string name)
 			readLoop(sd, &frame);
 		}
 		close(sd);
-		ii("Close bus %s", name.c_str());
+		ii("Close device %s", name);
 	}};
 
-	ii("Run job %s", name.c_str());
+	ii("Run job %s", name);
 	jobs_.push_back(move(t));
 }
 
