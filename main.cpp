@@ -29,6 +29,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "geometry_msgs/msg/point32.hpp"
 #include "carutils.h"
 
 #define DBC_NAMELEN_MAX 64
@@ -150,7 +151,10 @@ public:
 
 private:
 	struct topic {
-		rclcpp::Publisher<std_msgs::msg::String>::SharedPtr val;
+#ifdef PUBLISH_STR
+		rclcpp::Publisher<std_msgs::msg::String>::SharedPtr str;
+#endif
+		rclcpp::Publisher<geometry_msgs::msg::Point32>::SharedPtr bin;
 		const struct can_object *obj;
 		const struct can_signal *sig;
 	};
@@ -199,8 +203,10 @@ CanBridge::CanBridge(): Node(NODE_TAG)
 	init(dev, cfg);
 }
 
-#define create_publisher(name) \
+#define create_str_publisher(name) \
 	this->create_publisher<std_msgs::msg::String>(name, 10)
+#define create_bin_publisher(name) \
+	this->create_publisher<geometry_msgs::msg::Point32>(name, 10)
 
 bool CanBridge::parseSignal(char *str, const struct can_object *obj,
  const struct can_signal *sig, uint32_t line)
@@ -217,10 +223,18 @@ bool CanBridge::parseSignal(char *str, const struct can_object *obj,
 		name += std::string(obj->name) + "/";
 		name += std::string(sig->name);
 
-		if (!(topic.val = create_publisher(name))) {
-			ee("Failed to create topic %s, line %u", name, line);
+		if (!(topic.bin = create_bin_publisher(name))) {
+			ee("Failed to create bin topic %s, line %u", name, line);
 			return false;
 		}
+
+#ifdef PUBLISH_STR
+		name += "_str";
+		if (!(topic.str = create_str_publisher(name))) {
+			ee("Failed to create str topic %s, line %u", name, line);
+			return false;
+		}
+#endif
 
 		topic.obj = obj;
 		topic.sig = sig;
@@ -229,8 +243,6 @@ bool CanBridge::parseSignal(char *str, const struct can_object *obj,
 		return true;
 	}
 }
-
-#undef create_publisher
 
 bool CanBridge::parseBusObject(char *str, const struct can_object **obj,
  uint32_t line)
@@ -328,15 +340,27 @@ int CanBridge::read(int sd, struct can_frame *frame)
 void CanBridge::publish(struct can_frame *frame)
 {
 	uint64_t data = *((uint64_t *) frame->data);
+	struct timespec now;
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
 
 	for (auto &topic: topics_) {
 		if (frame->can_id != topic.obj->id)
 			continue;
 
 		float val = topic.sig->decode(data);
-		auto msg = std_msgs::msg::String();
-		msg.data = std::to_string(val) + " " + topic.sig->units;
-		topic.val->publish(msg);
+#ifdef PUBLISH_STR
+		auto str_msg = std_msgs::msg::String();
+		str_msg.data = std::to_string(now.tv_sec) + ".";
+		str_msg.data += std::to_string(now.tv_nsec) + " ";
+		str_msg.data += std::to_string(val) + " " + topic.sig->units;
+		topic.str->publish(str_msg);
+#endif
+		auto bin_msg = geometry_msgs::msg::Point32();
+		bin_msg.x = now.tv_sec;
+		bin_msg.y = now.tv_nsec;
+		bin_msg.z = val;
+		topic.bin->publish(bin_msg);
 	}
 }
 
