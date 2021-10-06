@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.5)
-project(canbus-decoder)
+
+include(config.cmake OPTIONAL RESULT_VARIABLE config_var)
+
+if(${config_var} STREQUAL "NOTFOUND")
+	project(canbus-decoder)
+else()
+	# alternative project name should be set in config
+	message("-- Using config.cmake")
+endif()
 
 # Default to C++14
 if(NOT CMAKE_CXX_STANDARD)
