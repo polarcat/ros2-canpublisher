@@ -30,10 +30,18 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "geometry_msgs/msg/point32.hpp"
+#include "sensor_msgs/msg/channel_float32.hpp"
 #include "carutils.h"
 
+#ifndef INFO_PERIOD
+#define INFO_PERIOD 1 /* seconds */
+#endif
+
 #define DBC_NAMELEN_MAX 64
+
+#ifndef NODE_TAG
 #define NODE_TAG "canbus"
+#endif
 
 #define rlog rclcpp::get_logger(NODE_TAG)
 #define ii(...) RCLCPP_INFO(rlog, __VA_ARGS__);
@@ -143,6 +151,8 @@ const struct can_signal *get_can_signal(const struct can_object *obj,
 
 } /* namespace */
 
+using canmsg_t = sensor_msgs::msg::ChannelFloat32;
+
 class CanBridge: public rclcpp::Node
 {
 public:
@@ -150,12 +160,25 @@ public:
 	~CanBridge();
 
 private:
+#ifdef SIGNAL_TOPIC
 	struct topic {
 		rclcpp::Publisher<geometry_msgs::msg::Point32>::SharedPtr data;
 		const struct can_object *obj;
 		const struct can_signal *sig;
 	};
-
+	bool createSignalTopic(const struct can_object *,
+	 const struct can_signal *, uint32_t line);
+#else
+	struct topic {
+		rclcpp::Publisher<std_msgs::msg::String>::SharedPtr info;
+		rclcpp::Publisher<canmsg_t>::SharedPtr data;
+		const struct can_object *obj;
+		std::vector<const struct can_signal *> sig;
+		time_t infoTime;
+	};
+	bool createObjectTopic(const struct can_object *,
+	 const struct can_signal *, uint32_t line);
+#endif
 	void readLoop(int sd, struct can_frame *);
 	void loop(const char *name);
 	void config(const char *path);
@@ -166,8 +189,6 @@ private:
 	 const struct can_signal *, uint32_t line);
 	bool parseBusObject(char *str, const struct can_object **,
 	 uint32_t line);
-	bool createSignalTopic(const struct can_object *,
-	 const struct can_signal *, uint32_t line);
 
 	std::vector<std::thread> jobs_;
 	std::vector<struct topic> topics_;
@@ -202,8 +223,7 @@ CanBridge::CanBridge(): Node(NODE_TAG)
 	init(dev, cfg);
 }
 
-#define create_str_publisher(name) \
-	this->create_publisher<std_msgs::msg::String>(name, 10)
+#ifdef SIGNAL_TOPIC
 #define create_sig_publisher(name) \
 	this->create_publisher<geometry_msgs::msg::Point32>(name, 10)
 
@@ -226,6 +246,40 @@ bool CanBridge::createSignalTopic(const struct can_object *obj,
 	ii("Created topic %s", name.c_str());
 	return true;
 }
+#else
+#define create_str_publisher(name) \
+	this->create_publisher<std_msgs::msg::String>(name, 10)
+#define create_obj_publisher(name) \
+	this->create_publisher<canmsg_t>(name, 10)
+
+bool CanBridge::createObjectTopic(const struct can_object *obj,
+ const struct can_signal *sig, uint32_t line)
+{
+	CanBridge::topic topic;
+	std::string name = "/" NODE_TAG "/";
+	name += std::string(obj->name);
+
+	if (!(topic.data = create_obj_publisher(name))) {
+		ee("Failed to create data topic %s, line %u", name, line);
+		return false;
+	}
+
+	topic.obj = obj;
+	topic.sig.push_back(sig);
+	ii("Created topic %s", name.c_str());
+
+	name += "/info";
+	if (!(topic.info = create_str_publisher(name))) {
+		ee("Failed to create info topic %s, line %u", name, line);
+		return false;
+	}
+
+	topic.infoTime = time(NULL);
+	ii("Created topic %s", name.c_str());
+	topics_.push_back(std::move(topic));
+	return true;
+}
+#endif
 
 bool CanBridge::parseSignal(char *str, const struct can_object *obj,
  const struct can_signal *sig, uint32_t line)
@@ -237,7 +291,18 @@ bool CanBridge::parseSignal(char *str, const struct can_object *obj,
 		ee("Line %u: bad signal name %s", line, &str[3]);
 		return false;
 	} else {
+#ifdef SIGNAL_TOPIC
 		return createSignalTopic(obj, sig, line);
+#else
+		for (auto &topic: topics_) {
+			if (topic.obj == obj) {
+				topic.sig.push_back(sig);
+				return true;
+			}
+		}
+
+		return createObjectTopic(obj, sig, line);
+#endif
 	}
 }
 
@@ -345,12 +410,37 @@ void CanBridge::publish(struct can_frame *frame)
 		if (frame->can_id != topic.obj->id)
 			continue;
 
+#ifdef SIGNAL_TOPIC
 		float val = topic.sig->decode(data);
 		auto msg = geometry_msgs::msg::Point32();
 		msg.x = now.tv_sec;
 		msg.y = now.tv_nsec;
 		msg.z = val;
 		topic.data->publish(msg);
+#else
+		auto info = std_msgs::msg::String();
+		auto msg = canmsg_t();
+		msg.name = topic.obj->name;
+		msg.values.push_back(now.tv_sec);
+		msg.values.push_back(now.tv_nsec);
+
+		uint8_t idx = 2; /* skip timestamp */
+		for (auto sig: topic.sig) {
+			float val = sig->decode(data);
+			msg.values.push_back(val);
+			info.data += sig->name;
+			info.data += ":";
+			info.data += std::to_string(idx);
+			info.data += ",";
+			idx++;
+		}
+		topic.data->publish(msg);
+
+		if (time(NULL) - topic.infoTime > 1) {
+			topic.info->publish(info);
+			topic.infoTime = time(NULL);
+		}
+#endif
 	}
 }
 
