@@ -151,10 +151,7 @@ public:
 
 private:
 	struct topic {
-#ifdef PUBLISH_STR
-		rclcpp::Publisher<std_msgs::msg::String>::SharedPtr str;
-#endif
-		rclcpp::Publisher<geometry_msgs::msg::Point32>::SharedPtr bin;
+		rclcpp::Publisher<geometry_msgs::msg::Point32>::SharedPtr data;
 		const struct can_object *obj;
 		const struct can_signal *sig;
 	};
@@ -169,6 +166,8 @@ private:
 	 const struct can_signal *, uint32_t line);
 	bool parseBusObject(char *str, const struct can_object **,
 	 uint32_t line);
+	bool createSignalTopic(const struct can_object *,
+	 const struct can_signal *, uint32_t line);
 
 	std::vector<std::thread> jobs_;
 	std::vector<struct topic> topics_;
@@ -205,8 +204,28 @@ CanBridge::CanBridge(): Node(NODE_TAG)
 
 #define create_str_publisher(name) \
 	this->create_publisher<std_msgs::msg::String>(name, 10)
-#define create_bin_publisher(name) \
+#define create_sig_publisher(name) \
 	this->create_publisher<geometry_msgs::msg::Point32>(name, 10)
+
+bool CanBridge::createSignalTopic(const struct can_object *obj,
+ const struct can_signal *sig, uint32_t line)
+{
+	CanBridge::topic topic;
+	std::string name = "/" NODE_TAG "/";
+	name += std::string(obj->name) + "/";
+	name += std::string(sig->name);
+
+	if (!(topic.data = create_sig_publisher(name))) {
+		ee("Failed to create signal topic %s, line %u", name, line);
+		return false;
+	}
+
+	topic.obj = obj;
+	topic.sig = sig;
+	topics_.push_back(std::move(topic));
+	ii("Created topic %s", name.c_str());
+	return true;
+}
 
 bool CanBridge::parseSignal(char *str, const struct can_object *obj,
  const struct can_signal *sig, uint32_t line)
@@ -218,29 +237,7 @@ bool CanBridge::parseSignal(char *str, const struct can_object *obj,
 		ee("Line %u: bad signal name %s", line, &str[3]);
 		return false;
 	} else {
-		CanBridge::topic topic;
-		std::string name = "/" NODE_TAG "/";
-		name += std::string(obj->name) + "/";
-		name += std::string(sig->name);
-
-		if (!(topic.bin = create_bin_publisher(name))) {
-			ee("Failed to create bin topic %s, line %u", name, line);
-			return false;
-		}
-
-#ifdef PUBLISH_STR
-		name += "_str";
-		if (!(topic.str = create_str_publisher(name))) {
-			ee("Failed to create str topic %s, line %u", name, line);
-			return false;
-		}
-#endif
-
-		topic.obj = obj;
-		topic.sig = sig;
-		topics_.push_back(std::move(topic));
-		ii("Created topic %s", name.c_str());
-		return true;
+		return createSignalTopic(obj, sig, line);
 	}
 }
 
@@ -349,18 +346,11 @@ void CanBridge::publish(struct can_frame *frame)
 			continue;
 
 		float val = topic.sig->decode(data);
-#ifdef PUBLISH_STR
-		auto str_msg = std_msgs::msg::String();
-		str_msg.data = std::to_string(now.tv_sec) + ".";
-		str_msg.data += std::to_string(now.tv_nsec) + " ";
-		str_msg.data += std::to_string(val) + " " + topic.sig->units;
-		topic.str->publish(str_msg);
-#endif
-		auto bin_msg = geometry_msgs::msg::Point32();
-		bin_msg.x = now.tv_sec;
-		bin_msg.y = now.tv_nsec;
-		bin_msg.z = val;
-		topic.bin->publish(bin_msg);
+		auto msg = geometry_msgs::msg::Point32();
+		msg.x = now.tv_sec;
+		msg.y = now.tv_nsec;
+		msg.z = val;
+		topic.data->publish(msg);
 	}
 }
 
