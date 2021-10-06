@@ -35,7 +35,7 @@
 #define DBC_NAMELEN_MAX 64
 #define NODE_TAG "canbus"
 
-#define rlog rclcpp::get_logger("canbus")
+#define rlog rclcpp::get_logger(NODE_TAG)
 #define ii(...) RCLCPP_INFO(rlog, __VA_ARGS__);
 #define ww(...) RCLCPP_WARN(rlog, __VA_ARGS__);
 #define ee(...) RCLCPP_ERROR(rlog, __VA_ARGS__);
@@ -219,7 +219,7 @@ bool CanBridge::parseSignal(char *str, const struct can_object *obj,
 		return false;
 	} else {
 		CanBridge::topic topic;
-		std::string name = "/canbus/";
+		std::string name = "/" NODE_TAG "/";
 		name += std::string(obj->name) + "/";
 		name += std::string(sig->name);
 
