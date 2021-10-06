@@ -15,13 +15,14 @@ find_package(ament_cmake_ros REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 
 include_directories(include)
 
 add_executable(${PROJECT_NAME} main.cpp)
 
 ament_target_dependencies(${PROJECT_NAME}
-	rclcpp std_msgs geometry_msgs rosidl_typesupport_cpp
+	rclcpp std_msgs geometry_msgs sensor_msgs rosidl_typesupport_cpp
 )
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
