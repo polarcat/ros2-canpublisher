@@ -259,6 +259,9 @@ bool CanBridge::createObjectTopic(const struct can_object *obj,
 	std::string name = "/" NODE_TAG "/";
 	name += std::string(obj->name);
 
+	std::transform(name.begin(), name.end(), name.begin(),
+	 [](unsigned char c){ return std::tolower(c); });
+
 	if (!(topic.data = create_obj_publisher(name))) {
 		ee("Failed to create data topic %s, line %u", name, line);
 		return false;
