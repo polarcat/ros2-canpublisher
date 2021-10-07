@@ -9,8 +9,8 @@
 
 struct can_signal {
   const char *name;
-  const char *units;
   float (*decode)(uint64_t data);
+  const char *(*to_string)(int32_t val);
 };
 
 struct can_object {

@@ -160,7 +160,7 @@ public:
 	~CanBridge();
 
 private:
-#ifdef SIGNAL_TOPIC
+#ifdef SIGNAL_TOPIC /* TOPIC_TYPE */
 	struct topic {
 		rclcpp::Publisher<geometry_msgs::msg::Point32>::SharedPtr data;
 		const struct can_object *obj;
@@ -168,7 +168,15 @@ private:
 	};
 	bool createSignalTopic(const struct can_object *,
 	 const struct can_signal *, uint32_t line);
-#else
+#elif defined(UI_TOPIC) /* TOPIC_TYPE */
+	struct topic {
+		rclcpp::Publisher<std_msgs::msg::String>::SharedPtr data;
+		const struct can_object *obj;
+		const struct can_signal *sig;
+	};
+	bool createSignalTopic(const struct can_object *,
+	 const struct can_signal *, uint32_t line);
+#else /* default TOPIC_TYPE */
 	struct topic {
 		rclcpp::Publisher<std_msgs::msg::String>::SharedPtr info;
 		rclcpp::Publisher<canmsg_t>::SharedPtr data;
@@ -178,7 +186,7 @@ private:
 	};
 	bool createObjectTopic(const struct can_object *,
 	 const struct can_signal *, uint32_t line);
-#endif
+#endif /* TOPIC_TYPE */
 	void readLoop(int sd, struct can_frame *);
 	void loop(const char *name);
 	void config(const char *path);
@@ -223,7 +231,7 @@ CanBridge::CanBridge(): Node(NODE_TAG)
 	init(dev, cfg);
 }
 
-#ifdef SIGNAL_TOPIC
+#ifdef SIGNAL_TOPIC /* TOPIC_TYPE */
 #define create_sig_publisher(name) \
 	this->create_publisher<geometry_msgs::msg::Point32>(name, 10)
 
@@ -246,7 +254,32 @@ bool CanBridge::createSignalTopic(const struct can_object *obj,
 	ii("Created topic %s", name.c_str());
 	return true;
 }
-#else
+#elif defined(UI_TOPIC) /* TOPIC_TYPE */
+#define create_str_publisher(name) \
+	this->create_publisher<std_msgs::msg::String>(name, 10)
+bool CanBridge::createSignalTopic(const struct can_object *obj,
+ const struct can_signal *sig, uint32_t line)
+{
+	CanBridge::topic topic;
+	std::string name = "/" NODE_TAG "/";
+	name += std::string(obj->name) + "/";
+	name += std::string(sig->name);
+
+	std::transform(name.begin(), name.end(), name.begin(),
+	 [](unsigned char c){ return std::tolower(c); });
+
+	if (!(topic.data = create_str_publisher(name))) {
+		ee("Failed to create signal topic %s, line %u", name, line);
+		return false;
+	}
+
+	topic.obj = obj;
+	topic.sig = sig;
+	topics_.push_back(std::move(topic));
+	ii("Created topic %s", name.c_str());
+	return true;
+}
+#else /* default TOPIC_TYPE */
 #define create_str_publisher(name) \
 	this->create_publisher<std_msgs::msg::String>(name, 10)
 #define create_obj_publisher(name) \
@@ -282,7 +315,7 @@ bool CanBridge::createObjectTopic(const struct can_object *obj,
 	topics_.push_back(std::move(topic));
 	return true;
 }
-#endif
+#endif /* TOPIC_TYPE */
 
 bool CanBridge::parseSignal(char *str, const struct can_object *obj,
  const struct can_signal *sig, uint32_t line)
@@ -291,12 +324,17 @@ bool CanBridge::parseSignal(char *str, const struct can_object *obj,
 		ee("Line %u: blank is expected after 'SG'", line);
 		return false;
 	} else if (!(sig = get_can_signal(obj, &str[3], sizeof(str) - 3))) {
-		ee("Line %u: bad signal name %s", line, &str[3]);
+		ee("Line %u: bad signal name '%s'", line, &str[3]);
 		return false;
 	} else {
-#ifdef SIGNAL_TOPIC
+#ifdef SIGNAL_TOPIC /* TOPIC_TYPE */
 		return createSignalTopic(obj, sig, line);
-#else
+#elif defined(UI_TOPIC) /* TOPIC_TYPE */
+		if (sig->to_string)
+			return createSignalTopic(obj, sig, line);
+		else
+			return true;
+#else /* default TOPIC_TYPE */
 		for (auto &topic: topics_) {
 			if (topic.obj == obj) {
 				topic.sig.push_back(sig);
@@ -305,7 +343,7 @@ bool CanBridge::parseSignal(char *str, const struct can_object *obj,
 		}
 
 		return createObjectTopic(obj, sig, line);
-#endif
+#endif /* TOPIC_TYPE */
 	}
 }
 
@@ -316,7 +354,7 @@ bool CanBridge::parseBusObject(char *str, const struct can_object **obj,
 		ee("Line %u: blank is expected after 'BO'", line);
 		return false;
 	} else if (!(*obj = get_can_object(&str[3], sizeof(str) - 3))) {
-		ee("Line %u: bad object name %s", line, &str[3]);
+		ee("Line %u: bad object name '%s'", line, &str[3]);
 		return false;
 	}
 
@@ -413,14 +451,19 @@ void CanBridge::publish(struct can_frame *frame)
 		if (frame->can_id != topic.obj->id)
 			continue;
 
-#ifdef SIGNAL_TOPIC
+#ifdef SIGNAL_TOPIC /* TOPIC_TYPE */
 		float val = topic.sig->decode(data);
 		auto msg = geometry_msgs::msg::Point32();
 		msg.x = now.tv_sec;
 		msg.y = now.tv_nsec;
 		msg.z = val;
 		topic.data->publish(msg);
-#else
+#elif defined(UI_TOPIC) /* TOPIC_TYPE */
+		float val = topic.sig->decode(data);
+		auto msg = std_msgs::msg::String();
+		msg.data = topic.sig->to_string(val);
+		topic.data->publish(msg);
+#else /* default TOPIC_TYPE */
 		auto info = std_msgs::msg::String();
 		auto msg = canmsg_t();
 		msg.name = topic.obj->name;
@@ -439,11 +482,11 @@ void CanBridge::publish(struct can_frame *frame)
 		}
 		topic.data->publish(msg);
 
-		if (time(NULL) - topic.infoTime > 1) {
+		if (time(NULL) - topic.infoTime > INFO_PERIOD) {
 			topic.info->publish(info);
 			topic.infoTime = time(NULL);
 		}
-#endif
+#endif /* TOPIC_TYPE */
 	}
 }
 
