@@ -5,7 +5,7 @@
 # This source code is licensed under the BSD Zero Clause License found in
 # the 0BSD file in the root directory of this source tree.
 
-ifs=$IFS
+ifs_=$IFS
 
 if [ $# -ne 1 ]; then
 	echo "Usage: $(basename $0) <dbc>"
@@ -14,9 +14,10 @@ fi
 
 header_="car.h"
 get_header2() { header_=${1}.h; }
-get_header() { IFS='.'; get_header2 $@; IFS=$ifs; }
+get_header() { IFS='.'; get_header2 $@; IFS=$ifs_; }
 get_header $(basename "$@")
 
+in_=$1
 out_=$header_
 echo "header: $out_"
 
@@ -25,15 +26,15 @@ echo "header: $out_"
 
 scale_=0
 get_scale2() { scale_=$2; }
-get_scale() { IFS='('; get_scale2 $1; IFS=$ifs; }
+get_scale() { IFS='('; get_scale2 $1; IFS=$ifs_; }
 offset_=0
 get_offset2() { offset_=$1; }
-get_offset() { IFS=')'; get_offset2 $2; IFS=$ifs; }
+get_offset() { IFS=')'; get_offset2 $2; IFS=$ifs_; }
 
 get_scale_offset()
 {
-	IFS=','; get_scale $1; IFS=$ifs
-	IFS=','; get_offset $1; IFS=$ifs
+	IFS=','; get_scale $1; IFS=$ifs_
+	IFS=','; get_offset $1; IFS=$ifs_
 }
 
 signed_=0
@@ -50,19 +51,20 @@ get_size()
 	esac
 	IFS='@'
 	get_size2 $2
-	IFS=$ifs;
+	IFS=$ifs_;
 }
 pos_=0
 get_pos() { pos_=$1; }
 
 get_pos_size()
 {
-	IFS='|'; get_size $1; IFS=$ifs
-	IFS='|'; get_pos $1; IFS=$ifs
+	IFS='|'; get_size $1; IFS=$ifs_
+	IFS='|'; get_pos $1; IFS=$ifs_
 }
 
 name_=''
 get_name() { name_=$1; }
+signame_=''
 
 ##=============================================================================
 # begin header file
@@ -78,28 +80,74 @@ cat > $out_ << EOF
 EOF
 
 ##=============================================================================
+# generate signal string values
+
+parse_values()
+{
+	printf "static const char *"
+	printf "to_string_${name_}__$signame_(int32_t val)\n{\n"
+	printf "  switch (val) {\n"
+
+	while [ $# -ne 0 ]; do
+		if [ $# -lt 2 ]; then
+			break
+		fi
+		printf "  case $1: return \"$2\";\n"
+		shift 2
+	done
+
+	printf "  default: return \"<nil>\";\n"
+	printf "  }\n"
+	printf "}\n\n"
+}
+
+msgid_=0
+to_string_fn()
+{
+	local found=0
+	while read tag id sig rest; do
+		if [ "$tag" != "VAL_" ]; then
+			continue
+		fi
+
+		str1="$tag $id $sig"
+		str2="VAL_ $msgid_ $signame_"
+		case "$str2" in
+		*"$str1"*) IFS="\""; parse_values $rest; IFS=$ifs_; found=1;;
+		esac
+	done < $in_
+	if [ $found -eq 0 ]; then
+		printf "#define to_string_${name_}__$signame_ NULL\n\n"
+	fi
+}
+
+##=============================================================================
 # generate signal decode functions
 
 decode_fn()
 {
 	printf "static float "
-	printf "decode_$1(uint64_t data)\n{\n"
+	printf "decode_${name_}__$code(uint64_t data)\n{\n"
 	printf "  return decode64($pos_, $size_, $scale_, $offset_, $lsb_, $signed_, data);\n"
-	printf "}\n"
+	printf "}\n\n"
 }
 
 while read tag code name pos scale range units rest; do
 	case "$tag" in
 	BO_)
-		IFS=':'; get_name $name; IFS=$ifs
+		IFS=':'; get_name $name; IFS=$ifs_
+		msgid_=$code
 		;;
 	*SG_)
 		get_pos_size $pos
 		get_scale_offset $scale
-		decode_fn "${name_}__$code" >> $out_
+		signame_=$code
+		decode_fn >> $out_
+		to_string_fn >> $out_
+		signame_=''
 		;;
 	esac
-done < $1
+done < $in_
 echo >> $out_
 
 ##=============================================================================
@@ -109,7 +157,7 @@ bracket_open=0
 while read tag code name pos scale range units rest; do
 	case "$tag" in
 	BO_)
-		IFS=':'; get_name $name; IFS=$ifs
+		IFS=':'; get_name $name; IFS=$ifs_
 		printf "static const struct can_signal ${name_}_signals[] = {\n" >> $out_
 		;;
 	*SG_)
@@ -117,7 +165,8 @@ while read tag code name pos scale range units rest; do
 		*[A-Za-z0-9]*) ;;
 		*) units='"-"'
 		esac
-		printf "  { \"$code\", $units, decode_${name_}__$code },\n" >> $out_
+		printf "  { \"$code\", decode_${name_}__$code,\n" >> $out_
+		printf "    to_string_${name_}__$code },\n" >> $out_
 		index=$((index + 1))
 		bracket_open=1
 		;;
@@ -128,7 +177,7 @@ while read tag code name pos scale range units rest; do
 		fi
 		;;
 	esac
-done < $1
+done < $in_
 
 ##=============================================================================
 # generate topics
@@ -138,10 +187,10 @@ echo "static const struct can_object can_objects_[] = {" >> $out_
 while read tag code name rest; do
 	case "$tag" in
 	BO_)
-		IFS=':'; get_name $name; IFS=$ifs
+		IFS=':'; get_name $name; IFS=$ifs_
 		printf "  { $code, \"$name_\", ${name_}_signals,\n" >> $out_
 		printf "   ARRAY_SIZE(${name_}_signals) },\n" >> $out_
 		;;
 	esac
-done < $1
+done < $in_
 printf "};\n\n" >> $out_
