@@ -113,7 +113,7 @@ to_string_fn()
 		str1="$tag $id $sig"
 		str2="VAL_ $msgid_ $signame_"
 		case "$str2" in
-		*"$str1"*) IFS="\""; parse_values $rest; IFS=$ifs_; found=1;;
+		*"$str1"*) IFS="\""; parse_values $rest; IFS=$ifs_; found=1; break;;
 		esac
 	done < $in_
 	if [ $found -eq 0 ]; then
