@@ -28,6 +28,7 @@
 #include <cctype>
 
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp/qos.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "geometry_msgs/msg/point32.hpp"
 #include "sensor_msgs/msg/channel_float32.hpp"
@@ -201,6 +202,7 @@ private:
 	std::vector<std::thread> jobs_;
 	std::vector<struct topic> topics_;
 	bool done_ = false;
+	rclcpp::QoS qos_ = rclcpp::QoS(1);
 };
 
 CanBridge::~CanBridge()
@@ -229,11 +231,14 @@ CanBridge::CanBridge(): Node(NODE_TAG)
 	}
 
 	init(dev, cfg);
+	qos_.durability_volatile();
+	qos_.keep_last(1);
+	qos_.reliable();
 }
 
 #ifdef SIGNAL_TOPIC /* TOPIC_TYPE */
 #define create_sig_publisher(name) \
-	this->create_publisher<geometry_msgs::msg::Point32>(name, 10)
+	this->create_publisher<geometry_msgs::msg::Point32>(name, qos_)
 
 bool CanBridge::createSignalTopic(const struct can_object *obj,
  const struct can_signal *sig, uint32_t line)
@@ -256,7 +261,7 @@ bool CanBridge::createSignalTopic(const struct can_object *obj,
 }
 #elif defined(UI_TOPIC) /* TOPIC_TYPE */
 #define create_str_publisher(name) \
-	this->create_publisher<std_msgs::msg::String>(name, 10)
+	this->create_publisher<std_msgs::msg::String>(name, qos_)
 bool CanBridge::createSignalTopic(const struct can_object *obj,
  const struct can_signal *sig, uint32_t line)
 {
@@ -281,9 +286,9 @@ bool CanBridge::createSignalTopic(const struct can_object *obj,
 }
 #else /* default TOPIC_TYPE */
 #define create_str_publisher(name) \
-	this->create_publisher<std_msgs::msg::String>(name, 10)
+	this->create_publisher<std_msgs::msg::String>(name, qos_)
 #define create_obj_publisher(name) \
-	this->create_publisher<canmsg_t>(name, 10)
+	this->create_publisher<canmsg_t>(name, qos_)
 
 bool CanBridge::createObjectTopic(const struct can_object *obj,
  const struct can_signal *sig, uint32_t line)
